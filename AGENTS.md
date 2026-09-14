@@ -24,11 +24,15 @@ work in the repo, not what to build.
   backend** centralized in `frontend/src/api/client.ts` (persisted to `localStorage`, no
   real network calls) that implements `openapi.yaml` exactly. See
   [`frontend/README.md`](frontend/README.md) for details.
-- **Backend**: not started. `frontend/src/api/generated/endpoints/` already has a real,
-  typed `fetch` function per operation (generated from `openapi.yaml` by orval — see
-  below); once a real backend exists, swapping the mock for those calls in `client.ts`
-  should be the only frontend change required.
-- **Database**: not started.
+- **Backend** (`server/`): implemented — FastAPI, every operation in `openapi.yaml`,
+  tested with pytest (`server/tests/`). Persistence is an **in-memory mock store**
+  (`server/src/flowlane_api/repositories/memory.py`) behind a `Store` protocol; see
+  [`server/README.md`](server/README.md). The frontend is **not wired to it yet**:
+  `frontend/src/api/generated/endpoints/` already has a real, typed `fetch` function per
+  operation (generated from `openapi.yaml` by orval — see below), so swapping the mock
+  for those calls in `client.ts` should be the only frontend change required.
+- **Database**: not started — replace `InMemoryStore` with a SQL implementation of the
+  same protocol (steps in `server/README.md`).
 
 ## Scope discipline
 
@@ -37,7 +41,8 @@ work in the repo, not what to build.
   asked for.
 - Follow the phase order in `_docs/specs.md` §19 (setup → DB/API → frontend → drag & drop
   → UX → auth → testing → deployment) unless the user directs otherwise. Frontend
-  (Phases 1/3/4/5, against the mock) is done; a real backend is Phase 2, done retroactively.
+  (Phases 1/3/4/5, against the mock) is done; the backend half of Phase 2 is done, the
+  database half isn't.
 
 ## Tech stack
 
@@ -49,13 +54,14 @@ work in the repo, not what to build.
   `npm run generate:api` from `frontend/` after editing `openapi.yaml`; generated files
   are committed, so the regeneration diff is reviewable). See "API contract changes"
   below.
-- Backend (not yet built): Python + FastAPI, Pydantic for validation, managed with
+- Backend (`server/`): Python 3.12 + FastAPI, Pydantic for validation, managed with
   [uv](https://docs.astral.sh/uv/) (dependencies, virtualenv, and running commands —
-  don't use pip/poetry/conda directly). Must implement `openapi.yaml` exactly.
+  don't use pip/poetry/conda directly). Implements `openapi.yaml` exactly.
 - Database (not yet built): PostgreSQL via SQLAlchemy or SQLModel, with Alembic for
-  migrations.
+  migrations. Until then the backend uses `InMemoryStore`.
 - Tests: Vitest + React Testing Library (unit/component) and Playwright (e2e) on the
-  frontend — not yet written; pytest on the backend once it exists.
+  frontend — not yet written; pytest on the backend (`server/tests/`, written first,
+  one fresh in-memory store per test).
 
 ### Frontend structure (implemented — `frontend/src/`)
 
@@ -79,9 +85,13 @@ src/
 └── utils/           # validation, date helpers, id generation, board transforms (optimistic-update logic)
 ```
 
-When the backend is built, use the equivalent Python layering: `routers/`, `services/`,
-`repositories/`, `schemas/` (Pydantic), `models/` (SQLAlchemy/SQLModel), under
-`server/src/flowlane_api/` (per `_docs/specs.md` §16).
+### Backend structure (implemented — `server/src/flowlane_api/`)
+
+Same layering in Python (per `_docs/specs.md` §16): `routers/` (HTTP only) →
+`services/` (rules: positions, cascades, reorder/move) → `repositories/` (`Store`
+protocol, `InMemoryStore` mock, plain-dataclass records), with `schemas/` for Pydantic
+request/response models and `errors.py` for the error envelope. `models/` (ORM) doesn't
+exist yet — it arrives with the database. Details in `server/README.md`.
 
 ## API contract changes
 
@@ -93,7 +103,8 @@ backend must all agree. When a change touches the API surface:
    commit the diff.
 3. Update `src/api/client.ts`'s mock implementation (and `mockStore.ts` if the data shape
    changed) to match.
-4. Once a real backend exists, update it the same way.
+4. Update the backend (`server/src/flowlane_api/schemas/`, `routers/`, `services/`) and
+   its tests the same way; `uv run pytest` from `server/` must pass.
 
 Never hand-edit anything under `frontend/src/api/generated/` — it's regenerated wholesale
 (`output.clean: true` in `orval.config.ts`) and hand edits will be silently discarded.
@@ -102,7 +113,7 @@ Never hand-edit anything under `frontend/src/api/generated/` — it's regenerate
 
 - TypeScript everywhere on the frontend; no implicit `any`, `noUnusedLocals`/
   `noUnusedParameters` on (see `frontend/tsconfig.app.json`). Type-hint everywhere on the
-  backend, once it exists; keep `mypy`/`pyright` clean.
+  backend; keep `mypy --strict` clean (`uv run mypy src tests` from `server/`).
 - Use a numeric `position` field for ordering columns and tasks (per `_docs/specs.md`
   §5 and `openapi.yaml`) — never rely on array/list index or ID order. `position` is
   server-managed (`readOnly` in the schema); clients only influence it through the
@@ -117,7 +128,7 @@ Never hand-edit anything under `frontend/src/api/generated/` — it's regenerate
 - Never expose database credentials or secrets to the frontend; keep them in
   server-side environment variables only (see `.gitignore` — `.env*` files are excluded
   except `.env.example`).
-- Once the backend exists: run its commands through `uv` (`uv sync`, `uv run <cmd>`,
+- Backend: run its commands through `uv` (`uv sync`, `uv run <cmd>`,
   `uv add <package>`) so `pyproject.toml` and `uv.lock` stay the source of truth — never
   install packages into a bare/global environment. Validate all input with Pydantic
   models server-side, even though the frontend also validates (`frontend/src/utils/
@@ -127,14 +138,34 @@ Never hand-edit anything under `frontend/src/api/generated/` — it's regenerate
 
 - Frontend: `npm run build` (runs `tsc -b` then `vite build`) and `npm run lint`
   (`oxlint`) from `frontend/` should both be clean.
-- Backend (once it exists): run linting/type-checking and the test suite
-  (`uv run pytest`, `uv run ruff check`, etc.).
+- Backend: from `server/`, `uv run pytest`, `uv run ruff check .`, `uv run ruff format
+  --check .`, and `uv run mypy src tests` should all be clean.
 - Confirm drag-and-drop and other destructive/stateful flows still match the "optimistic
   update, then persist, then revert on failure" behavior described in `_docs/specs.md`
   §11 (`frontend/src/hooks/useColumnMutations.ts`, `useTaskMutations.ts`).
 - If `openapi.yaml` changed, confirm `frontend/src/api/generated/` was regenerated (step
   2 under "API contract changes") and the mock in `client.ts` still matches it.
 - Keep commits scoped to one logical change.
+
+## Running the backend
+
+`cd server` then `uv run fastapi dev src/flowlane_api/main.py` (or, from the root,
+`uv --directory server run fastapi dev src/flowlane_api/main.py`). Details and URLs in
+[`server/README.md`](server/README.md); the two things that trip people up:
+
+- Everything is mounted under `/api` (`servers: [{url: /api}]` in `openapi.yaml`), so
+  Swagger is at `http://localhost:8000/api/docs`, **not** the `/docs` URL that
+  `fastapi dev` prints in its banner. A 404 on `GET /docs` in the logs is expected.
+- The store is in-memory: every restart — including `fastapi dev`'s auto-reload on a
+  source change — wipes all boards. Don't treat lost data as a bug.
+
+## Shell notes
+
+This project is developed on Windows. When suggesting commands to the user, remember
+that **Windows PowerShell 5.1 does not support `&&`** — chain with `;` (or give one
+command per block). `&&` works in PowerShell 7+, Git Bash, and the Bash tool, so it's
+fine inside scripts you run yourself; it's the copy-pasteable snippets that must avoid
+it. Use forward slashes in paths passed to `uv`/`fastapi` (they work everywhere).
 
 ## When the spec is ambiguous
 
