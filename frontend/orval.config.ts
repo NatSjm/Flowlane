@@ -5,13 +5,11 @@ import { defineConfig } from "orval";
  * (the backend contract the frontend expects — see that file's `info`
  * section) into src/api/generated/.
  *
- * There's no real backend yet, so these generated fetch functions aren't
- * wired into the app — src/api/client.ts still implements the mock. They
- * exist so:
- *   1. the domain types in src/types (re-exported from src/api/generated/model)
- *      can never drift from openapi.yaml, and
- *   2. swapping the mock for the real backend later is "call these instead
- *      of the mock functions", not "write an HTTP client from scratch".
+ * src/api/client.ts wraps the generated fetch functions (unwrapping the
+ * response and turning error envelopes into ApiError), and src/types
+ * re-exports the generated model types, so neither can drift from
+ * openapi.yaml. `baseUrl: "/api"` matches `servers` in the contract; the
+ * Vite dev server proxies that prefix to the FastAPI backend (vite.config.ts).
  *
  * Regenerate after editing ../openapi.yaml with `npm run generate:api`.
  */

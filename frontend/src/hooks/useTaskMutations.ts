@@ -7,7 +7,7 @@ import { withTaskMoved, withTaskRemoved, withTaskUpdated } from "../utils/boardT
 
 /**
  * Task mutations follow the spec §11 optimistic-update contract: update the
- * cached board immediately, persist via the (mocked) API, and roll back to
+ * cached board immediately, persist via the API, and roll back to
  * the snapshot if the request fails.
  */
 

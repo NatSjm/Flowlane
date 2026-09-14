@@ -4,7 +4,7 @@ A web-based Kanban board for managing tasks across the stages of a workflow: cre
 
 Full specification: [_docs/specs.md](_docs/specs.md) · Backend API contract: [openapi.yaml](openapi.yaml)
 
-**Status:** the frontend is built and runs against a mocked backend (see below). The real backend (`server/`) implements `openapi.yaml` with an in-memory mock database; the frontend isn't wired to it yet, and the real database hasn't been started.
+**Status:** the frontend is built and talks to the real backend (`server/`), which implements `openapi.yaml` on top of an in-memory mock database. The real database hasn't been started, so all data is lost whenever the backend restarts.
 
 ## Features (MVP)
 
@@ -13,8 +13,8 @@ Full specification: [_docs/specs.md](_docs/specs.md) · Backend API contract: [o
 - Create, edit, delete, and view tasks with priority, due date, and description
 - Drag and drop to reorder tasks within a column and move tasks between columns
 - Search and filter tasks
-- State survives a page refresh (currently via a `localStorage`-backed mock — see
-  "Mock backend" below; will move to a real database once the backend exists)
+- State survives a page refresh (held by the backend — in memory for now, so it
+  lasts until the backend restarts; a real database is next)
 
 See [_docs/specs.md](_docs/specs.md) for stretch features (auth, collaboration, labels, comments, etc.) and the full data model, API, and phased build plan.
 
@@ -28,14 +28,15 @@ See [_docs/specs.md](_docs/specs.md) for stretch features (auth, collaboration, 
 | Database *(not yet built)* | PostgreSQL with SQLAlchemy/SQLModel + Alembic migrations — the backend currently uses an in-memory mock store |
 | Testing | Vitest, React Testing Library, Playwright (frontend, not yet written); pytest (backend) |
 
-## Mock backend
+## How the pieces connect
 
-The frontend isn't wired to the server yet, so its "backend calls" are centralized in
-[`frontend/src/api/client.ts`](frontend/src/api/client.ts) and mocked: an in-memory
-store persisted to `localStorage` that implements [openapi.yaml](openapi.yaml) exactly
-— same requests, responses, and error shape a real backend will return. See
-[frontend/README.md](frontend/README.md) for how it works and how to swap in a real
-backend later.
+[openapi.yaml](openapi.yaml) is the contract. The backend implements it under `/api`;
+[Orval](https://orval.dev) generates typed `fetch` functions and model types from it
+into `frontend/src/api/generated/`, which
+[`frontend/src/api/client.ts`](frontend/src/api/client.ts) wraps into the `api` object
+the rest of the frontend uses. In development the Vite dev server proxies `/api` to the
+backend on port 8000 (`frontend/vite.config.ts`); in production the API is expected to
+be served same-origin. See [frontend/README.md](frontend/README.md).
 
 ## Project Structure
 
@@ -46,8 +47,8 @@ frontend/
 └── src/
     ├── api/
     │   ├── generated/   # orval-generated types + fetch client from openapi.yaml (do not hand-edit)
-    │   ├── client.ts    # the `api` object — mock backend for now
-    │   └── mockStore.ts # localStorage-backed "database" + seed data
+    │   ├── client.ts    # the `api` object — wraps the generated fetch client
+    │   └── apiError.ts  # ApiError + toUserMessage()
     ├── components/      # Board/, Column/, Task/, common/ (Modal, ConfirmDialog, ...)
     ├── pages/           # Dashboard/, Board/
     ├── hooks/           # TanStack Query hooks (queries + optimistic mutations)
@@ -71,18 +72,7 @@ server/                  # FastAPI backend — see server/README.md
 
 ## Getting Started
 
-### Frontend (works today)
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Opens at http://localhost:5173. No backend or database required — see "Mock backend"
-above.
-
-### Backend
+### Backend (start this first)
 
 Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and all dependencies
 itself on first run — no separate `pip install`).
@@ -114,12 +104,25 @@ Data lives in memory and is lost on every restart — including `fastapi dev`'s
 auto-reload when a source file changes. See [server/README.md](server/README.md) for the
 layout and how the mock store will be replaced by a real database.
 
+### Frontend
+
+With the backend running, in a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Opens at http://localhost:5173 and proxies `/api` requests to the backend. If the
+backend isn't up, the dashboard shows an error state until it is.
+
 ## Development Phases
 
 1. ~~Project setup~~ — frontend and backend scaffolded; database pending
-2. Database + API (Board / Column / Task CRUD) — contract specified in
-   [openapi.yaml](openapi.yaml) and implemented by the frontend's mock; real
-   implementation pending
+2. Database + API (Board / Column / Task CRUD) — API done (contract in
+   [openapi.yaml](openapi.yaml), implemented in `server/`, frontend wired to it);
+   database pending
 3. ~~Basic frontend~~ (dashboard, board page, task modals) — done
 4. ~~Drag & drop~~ (reordering and moving tasks/columns) — done
 5. ~~UX polish~~ (loading/empty/error states, search, filtering, responsive design) — done
