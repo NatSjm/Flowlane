@@ -1,0 +1,758 @@
+openapi: 3.0.3
+
+info:
+  title: Flowlane API
+  version: "0.1.0"
+  description: |
+    Backend contract expected by the Flowlane frontend (`frontend/`), which
+    currently talks to a mock implementation of this exact contract in
+    `frontend/src/api/client.ts` (persisted to `localStorage`). This file
+    documents that mock precisely so a real backend can be dropped in with no
+    frontend changes — see `frontend/src/api/` and `_docs/specs.md` §6-9.
+
+    ### Authentication
+
+    **None of the endpoints below require authentication.** The frontend
+    never sends credentials or an `Authorization` header, and every board it
+    creates is attributed to a single hardcoded `ownerId` ("local-user").
+    This matches `_docs/specs.md` §15, which explicitly defers auth to
+    Phase 2/6: "For the first version, authentication can be skipped and
+    added in Phase 2." When that phase happens, `ownerId` should switch from
+    a hardcoded value to the authenticated user's id, and the endpoints below
+    will need a bearer-token (or session) requirement added — until then this
+    spec has no `securitySchemes` and every operation is effectively public.
+
+    ### Error shape
+
+    Every error response uses the same envelope (`_docs/specs.md` §14):
+
+    ```json
+    { "error": { "code": "VALIDATION_ERROR", "message": "Task title is required" } }
+    ```
+
+    The mock only ever produces two codes, reflected throughout this spec:
+    - `VALIDATION_ERROR` (400) — a request body failed the rules in
+      `frontend/src/utils/validation.ts` (mirrored in each schema below).
+    - `NOT_FOUND` (404) — a path parameter (`boardId`, `columnId`, `taskId`)
+      doesn't reference an existing record.
+
+    A real backend will likely add more codes (e.g. `CONFLICT`, `UNAUTHORIZED`,
+    `INTERNAL_ERROR`) but should keep the same `{ error: { code, message } }`
+    envelope, since `frontend/src/api/apiError.ts` only reads `code`/`message`.
+
+    ### Ordering
+
+    `position` is a zero-based integer maintained by the server, never chosen
+    freely by the client — see `_docs/specs.md` §5 ("Use a numeric position
+    rather than relying on task IDs"). Clients influence it only through
+    the dedicated reorder/move endpoints (`PATCH /boards/{boardId}/columns/reorder`,
+    `PATCH /tasks/{taskId}/move`); it is never a writable field on create/update
+    bodies, and the server is responsible for keeping positions contiguous
+    (0, 1, 2, …) within a board's columns and within a column's tasks after
+    any insert, delete, or reorder.
+
+servers:
+  - url: /api
+    description: Same-origin API, as called by the frontend (relative fetches from frontend/src/api/client.ts).
+
+tags:
+  - name: Boards
+    description: Create, view, rename, and delete boards.
+  - name: Columns
+    description: Create, rename, delete, and reorder the columns on a board.
+  - name: Tasks
+    description: Create, view, edit, delete, and move/reorder tasks within a board's columns.
+
+paths:
+  /boards:
+    get:
+      tags: [Boards]
+      operationId: listBoards
+      summary: List boards
+      description: |
+        Powers the `/` dashboard. Returns one summary per board, each with
+        aggregate column/task counts (`frontend/src/hooks/useBoards.ts`
+        `useBoardsQuery`), sorted oldest-created first.
+      security: []
+      responses:
+        "200":
+          description: Boards, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BoardSummary"
+
+    post:
+      tags: [Boards]
+      operationId: createBoard
+      summary: Create a board
+      description: |
+        Creates a board and, as a side effect, seeds it with the three
+        default columns **Todo**, **In Progress**, **Done** at positions
+        0, 1, 2 (`_docs/specs.md` §2). The frontend relies on this: it does
+        not make a separate call to create default columns.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBoardInput"
+      responses:
+        "201":
+          description: Board created (its seeded columns are not included in this response — fetch `GET /boards/{boardId}` for the full detail with columns).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Board"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /boards/{boardId}:
+    parameters:
+      - $ref: "#/components/parameters/boardId"
+
+    get:
+      tags: [Boards]
+      operationId: getBoard
+      summary: Get a board's full detail
+      description: |
+        Powers the `/boards/:boardId` board page
+        (`frontend/src/hooks/useBoard.ts`). Returns the board with its
+        columns, each carrying its tasks — both sorted by `position`
+        ascending. This is the single source of truth the frontend caches
+        and optimistically patches for every column/task mutation, so its
+        shape (nested columns → nested tasks) must stay exactly as below.
+      security: []
+      responses:
+        "200":
+          description: Board with nested columns and tasks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [Boards]
+      operationId: updateBoard
+      summary: Rename a board
+      description: Only supports renaming today — `frontend/src/hooks/useBoards.ts` `useRenameBoardMutation`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBoardInput"
+      responses:
+        "200":
+          description: Updated board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Board"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Boards]
+      operationId: deleteBoard
+      summary: Delete a board
+      description: Cascades — deletes every column and task belonging to the board.
+      security: []
+      responses:
+        "204":
+          description: Board (and its columns/tasks) deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /boards/{boardId}/columns:
+    parameters:
+      - $ref: "#/components/parameters/boardId"
+
+    post:
+      tags: [Columns]
+      operationId: createColumn
+      summary: Create a column on a board
+      description: |
+        Appends a new column at the end of the board (`position` = current
+        column count). Used both for the "+ Add column" control and — via
+        the same input shape — the three default columns a new board is
+        seeded with.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateColumnInput"
+      responses:
+        "201":
+          description: Column created (with no tasks yet).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Column"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /boards/{boardId}/columns/reorder:
+    parameters:
+      - $ref: "#/components/parameters/boardId"
+
+    patch:
+      tags: [Columns]
+      operationId: reorderColumns
+      summary: Reorder a board's columns
+      description: |
+        Backs column drag-and-drop (`frontend/src/hooks/useColumnMutations.ts`
+        `useReorderColumnsMutation`). `columnIds` must list **every** column
+        currently on the board, in the desired new order; the server sets
+        each column's `position` to its index in that array (0-based).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReorderColumnsInput"
+      responses:
+        "200":
+          description: All of the board's columns, in their new order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Column"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          description: The board, or one of the ids in `columnIds`, does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /columns/{columnId}:
+    parameters:
+      - $ref: "#/components/parameters/columnId"
+
+    patch:
+      tags: [Columns]
+      operationId: updateColumn
+      summary: Rename a column
+      description: Only supports renaming today — `frontend/src/hooks/useColumnMutations.ts` `useRenameColumnMutation`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateColumnInput"
+      responses:
+        "200":
+          description: Updated column.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Column"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Columns]
+      operationId: deleteColumn
+      summary: Delete a column
+      description: |
+        Cascades — deletes every task in the column — then reindexes the
+        board's remaining columns so `position` stays contiguous (0, 1, 2, …).
+      security: []
+      responses:
+        "204":
+          description: Column (and its tasks) deleted; sibling columns reindexed.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /columns/{columnId}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/columnId"
+
+    post:
+      tags: [Tasks]
+      operationId: createTask
+      summary: Create a task in a column
+      description: |
+        Appends a new task at the end of the column (`position` = current
+        task count in that column). `priority` defaults to `MEDIUM` when
+        omitted.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskInput"
+      responses:
+        "201":
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tasks/{taskId}:
+    parameters:
+      - $ref: "#/components/parameters/taskId"
+
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      summary: Get a single task
+      description: |
+        Exposed by the API client (`frontend/src/api/client.ts`) for
+        completeness with `_docs/specs.md` §8, though the board page
+        currently reads task data from the already-fetched
+        `GET /boards/{boardId}` payload rather than calling this directly.
+      security: []
+      responses:
+        "200":
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [Tasks]
+      operationId: updateTask
+      summary: Edit a task
+      description: |
+        All fields are optional — only supplied fields are changed
+        (`frontend/src/hooks/useTaskMutations.ts` `useUpdateTaskMutation`,
+        used by the task edit modal). Setting `columnId` here moves the task
+        to the end of that column; to control the exact drop position (as
+        drag-and-drop needs to), use `PATCH /tasks/{taskId}/move` instead.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskInput"
+      responses:
+        "200":
+          description: Updated task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          description: The task, or the target `columnId`, does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      tags: [Tasks]
+      operationId: deleteTask
+      summary: Delete a task
+      description: Reindexes the remaining tasks in its column so `position` stays contiguous.
+      security: []
+      responses:
+        "204":
+          description: Task deleted; sibling tasks in its column reindexed.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tasks/{taskId}/move:
+    parameters:
+      - $ref: "#/components/parameters/taskId"
+
+    patch:
+      tags: [Tasks]
+      operationId: moveTask
+      summary: Move (and/or reorder) a task
+      description: |
+        The dedicated drag-and-drop endpoint (`_docs/specs.md` §8,
+        `frontend/src/hooks/useTaskMutations.ts` `useMoveTaskMutation`) for
+        both "reorder within a column" and "move to another column" —
+        `columnId` may equal the task's current column. `position` is the
+        desired **zero-based index within the destination column**
+        (in the destination's post-move task order, not a global position);
+        out-of-range values are clamped by the server to
+        `[0, destinationTaskCount]`. The server reindexes both the source
+        and destination columns' tasks afterward.
+
+        Per `_docs/specs.md` §11, the frontend applies this change to its UI
+        optimistically before this request resolves, and rolls back if it
+        fails — so this endpoint should fail fast and predictably rather
+        than partially apply a move.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveTaskInput"
+      responses:
+        "200":
+          description: The moved task, with its updated `columnId` and `position`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          description: The task, or the target `columnId`, does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  parameters:
+    boardId:
+      name: boardId
+      in: path
+      required: true
+      schema:
+        type: string
+      example: board-6f7ba813-1720-41f8-a2b7-2d1c516eb287
+
+    columnId:
+      name: columnId
+      in: path
+      required: true
+      schema:
+        type: string
+      example: column-775cc714-7510-4d09-a037-36d6a2c19e27
+
+    taskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+      example: task-3f2b1c9a-8e4d-4a11-9b2e-2a6f7d0c9e1a
+
+  responses:
+    ValidationError:
+      description: The request body failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Task title is required
+
+    NotFound:
+      description: No record exists for the given id(s).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: NOT_FOUND
+              message: Board not found
+
+  schemas:
+    Priority:
+      type: string
+      description: One of LOW, MEDIUM, HIGH (`_docs/specs.md` §9). Kept as an enum end-to-end, never a free string.
+      enum: [LOW, MEDIUM, HIGH]
+
+    Error:
+      type: object
+      description: 'Uniform error envelope used by every non-2xx response (`_docs/specs.md` §14).'
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code. The mock only emits VALIDATION_ERROR and NOT_FOUND.
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              description: Human-readable message; safe to show directly in the UI.
+              example: Task title is required
+
+    Board:
+      type: object
+      required: [id, name, ownerId, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          readOnly: true
+          example: board-6f7ba813-1720-41f8-a2b7-2d1c516eb287
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        ownerId:
+          type: string
+          readOnly: true
+          description: |
+            Not supplied by the client. With no auth implemented yet, the
+            mock hardcodes this to a single local-user id for every board;
+            once Phase 6 auth lands this should become the authenticated
+            caller's user id.
+          example: local-user
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+
+    BoardSummary:
+      description: 'Board plus aggregate counts, as listed on the `/` dashboard (`_docs/specs.md` §10).'
+      allOf:
+        - $ref: "#/components/schemas/Board"
+        - type: object
+          required: [columnCount, taskCount]
+          properties:
+            columnCount:
+              type: integer
+              minimum: 0
+              readOnly: true
+            taskCount:
+              type: integer
+              minimum: 0
+              readOnly: true
+              description: Total tasks across all of the board's columns.
+
+    BoardDetail:
+      description: 'Full board payload returned by `GET /boards/{boardId}` — columns (sorted by position) each carrying their tasks (sorted by position).'
+      allOf:
+        - $ref: "#/components/schemas/Board"
+        - type: object
+          required: [columns]
+          properties:
+            columns:
+              type: array
+              items:
+                $ref: "#/components/schemas/ColumnWithTasks"
+
+    Column:
+      type: object
+      required: [id, boardId, name, position, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          readOnly: true
+          example: column-775cc714-7510-4d09-a037-36d6a2c19e27
+        boardId:
+          type: string
+          readOnly: true
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        position:
+          type: integer
+          minimum: 0
+          readOnly: true
+          description: Zero-based; server-maintained. Set only via reorder, never directly.
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+
+    ColumnWithTasks:
+      description: A column with its tasks attached, as nested inside `BoardDetail`.
+      allOf:
+        - $ref: "#/components/schemas/Column"
+        - type: object
+          required: [tasks]
+          properties:
+            tasks:
+              type: array
+              items:
+                $ref: "#/components/schemas/Task"
+
+    Task:
+      type: object
+      required: [id, columnId, title, description, priority, position, dueDate, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          readOnly: true
+          example: task-3f2b1c9a-8e4d-4a11-9b2e-2a6f7d0c9e1a
+        columnId:
+          type: string
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 5000
+          description: Empty string when no description has been set (never null/omitted).
+        priority:
+          $ref: "#/components/schemas/Priority"
+        position:
+          type: integer
+          minimum: 0
+          readOnly: true
+          description: Zero-based index within its column; server-maintained. Set only via create (appended) or move, never directly.
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+
+    CreateBoardInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Website Redesign
+
+    UpdateBoardInput:
+      type: object
+      description: Rename only — every field is required (the frontend always sends the full new name, not a partial patch).
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    CreateColumnInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Todo
+
+    UpdateColumnInput:
+      type: object
+      description: Rename only — every field is required (the frontend always sends the full new name, not a partial patch).
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+
+    ReorderColumnsInput:
+      type: object
+      required: [columnIds]
+      properties:
+        columnIds:
+          type: array
+          description: Every column id on the board, in the desired display order.
+          items:
+            type: string
+          example:
+            - column-3
+            - column-1
+            - column-2
+
+    CreateTaskInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 5000
+          default: ""
+        priority:
+          allOf:
+            - $ref: "#/components/schemas/Priority"
+          default: MEDIUM
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+          default: null
+
+    UpdateTaskInput:
+      type: object
+      description: |
+        Partial update — every field is optional and, when present,
+        replaces the current value. Supplying `columnId` moves the task to
+        the end of that column (see `PATCH /tasks/{taskId}/move` for
+        control over the exact position).
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 5000
+        priority:
+          $ref: "#/components/schemas/Priority"
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        columnId:
+          type: string
+          description: Move the task to this column (appended at the end).
+
+    MoveTaskInput:
+      type: object
+      required: [columnId, position]
+      properties:
+        columnId:
+          type: string
+          description: Destination column id (may be the task's current column, for same-column reordering).
+        position:
+          type: integer
+          minimum: 0
+          description: Desired zero-based index within the destination column's task order. Out-of-range values are clamped by the server.
+      example:
+        columnId: column-2
+        position: 1
