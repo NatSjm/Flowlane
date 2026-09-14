@@ -4,7 +4,7 @@ A web-based Kanban board for managing tasks across the stages of a workflow: cre
 
 Full specification: [_docs/specs.md](_docs/specs.md) · Backend API contract: [openapi.yaml](openapi.yaml)
 
-**Status:** the frontend is built and runs against a mocked backend (see below); the real backend and database haven't been started yet.
+**Status:** the frontend is built and runs against a mocked backend (see below). The real backend (`server/`) implements `openapi.yaml` with an in-memory mock database; the frontend isn't wired to it yet, and the real database hasn't been started.
 
 ## Features (MVP)
 
@@ -24,13 +24,13 @@ See [_docs/specs.md](_docs/specs.md) for stretch features (auth, collaboration, 
 | --- | --- |
 | Frontend | React, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS, `@dnd-kit` |
 | API contract & codegen | [openapi.yaml](openapi.yaml), consumed by [Orval](https://orval.dev) to generate frontend types + a typed `fetch` client |
-| Backend *(not yet built)* | Python, FastAPI, Pydantic, managed with [uv](https://docs.astral.sh/uv/) — must implement `openapi.yaml` |
-| Database *(not yet built)* | PostgreSQL with SQLAlchemy/SQLModel + Alembic migrations |
+| Backend | Python, FastAPI, Pydantic, managed with [uv](https://docs.astral.sh/uv/) — implements `openapi.yaml` (see [server/README.md](server/README.md)) |
+| Database *(not yet built)* | PostgreSQL with SQLAlchemy/SQLModel + Alembic migrations — the backend currently uses an in-memory mock store |
 | Testing | Vitest, React Testing Library, Playwright (frontend, not yet written); pytest (backend) |
 
 ## Mock backend
 
-There's no server yet, so the frontend's "backend calls" are centralized in
+The frontend isn't wired to the server yet, so its "backend calls" are centralized in
 [`frontend/src/api/client.ts`](frontend/src/api/client.ts) and mocked: an in-memory
 store persisted to `localStorage` that implements [openapi.yaml](openapi.yaml) exactly
 — same requests, responses, and error shape a real backend will return. See
@@ -54,20 +54,19 @@ frontend/
     ├── types/
     └── utils/
 
-server/                  # not yet scaffolded — see "Getting Started"
+server/                  # FastAPI backend — see server/README.md
 ├── pyproject.toml       # uv-managed project + dependencies
 ├── uv.lock
 ├── src/
 │   └── flowlane_api/
-│       ├── routers/     # boards.py, columns.py, tasks.py
-│       ├── services/
-│       ├── repositories/
-│       ├── schemas/     # Pydantic models
-│       ├── models/      # SQLAlchemy/SQLModel models
-│       ├── db.py
+│       ├── routers/     # boards.py, columns.py, tasks.py — HTTP only
+│       ├── services/    # positions, cascades, reorder/move rules
+│       ├── repositories/# Store protocol + InMemoryStore (mock DB; SQL impl comes later)
+│       ├── schemas/     # Pydantic models (camelCase on the wire)
+│       ├── dependencies.py
+│       ├── errors.py    # { error: { code, message } } envelope
 │       └── main.py
-├── alembic/          # migrations
-└── tests/
+└── tests/               # pytest, one fresh in-memory store per test
 ```
 
 ## Getting Started
@@ -83,24 +82,41 @@ npm run dev
 Opens at http://localhost:5173. No backend or database required — see "Mock backend"
 above.
 
-### Backend (not yet built)
+### Backend
 
-> This section will be filled in once the backend is scaffolded (see Phase 2 in
-> [_docs/specs.md](_docs/specs.md)). It must implement [openapi.yaml](openapi.yaml).
->
-> The backend will be a `uv`-managed Python project. Once scaffolded, the usual commands
-> will be:
->
-> ```bash
-> cd server
-> uv sync            # install dependencies
-> uv run fastapi dev # run the dev server
-> uv run pytest       # run tests
-> ```
+Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and all dependencies
+itself on first run — no separate `pip install`).
+
+```bash
+cd server
+uv run fastapi dev src/flowlane_api/main.py  # dev server with reload at http://localhost:8000
+uv run pytest                                # run tests
+```
+
+Or from the repo root without changing directory:
+
+```bash
+uv --directory server run fastapi dev src/flowlane_api/main.py
+```
+
+> **Windows PowerShell 5.1** doesn't support `&&` — chain commands with `;` instead
+> (`cd server; uv run fastapi dev src/flowlane_api/main.py`), or run them one at a time.
+
+Once it's up:
+
+- Swagger UI: http://localhost:8000/api/docs — **not** the `/docs` URL that `fastapi
+  dev` prints in its banner; that one 404s because everything is mounted under `/api`
+  to match `servers: [{url: /api}]` in [openapi.yaml](openapi.yaml).
+- Health check: http://localhost:8000/api/health → `{"status":"ok"}`
+- API base: http://localhost:8000/api (e.g. `GET /api/boards`)
+
+Data lives in memory and is lost on every restart — including `fastapi dev`'s
+auto-reload when a source file changes. See [server/README.md](server/README.md) for the
+layout and how the mock store will be replaced by a real database.
 
 ## Development Phases
 
-1. ~~Project setup~~ — frontend done; backend/database pending
+1. ~~Project setup~~ — frontend and backend scaffolded; database pending
 2. Database + API (Board / Column / Task CRUD) — contract specified in
    [openapi.yaml](openapi.yaml) and implemented by the frontend's mock; real
    implementation pending
