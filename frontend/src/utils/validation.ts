@@ -1,7 +1,7 @@
 /**
  * Shared validation rules, mirrored from `_docs/specs.md` §13. These run
- * client-side for instant feedback; the mock API layer (src/api) re-checks
- * the same rules to stand in for server-side validation.
+ * client-side for instant feedback; the server re-checks the same rules
+ * (server/src/flowlane_api/schemas/) and returns the same messages.
  */
 
 export const BOARD_NAME_MAX = 100;

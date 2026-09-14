@@ -20,17 +20,16 @@ work in the repo, not what to build.
 ## Current state
 
 - **Frontend** (`frontend/`): implemented — dashboard, board page, drag-and-drop,
-  search/filter, all MVP flows from `_docs/specs.md` §2/§18. It talks to a **mock
-  backend** centralized in `frontend/src/api/client.ts` (persisted to `localStorage`, no
-  real network calls) that implements `openapi.yaml` exactly. See
+  search/filter, all MVP flows from `_docs/specs.md` §2/§18. It talks to the real
+  backend through `frontend/src/api/client.ts`, which wraps the orval-generated `fetch`
+  functions in `frontend/src/api/generated/endpoints/` (relative `/api` URLs; the Vite
+  dev server proxies them to port 8000 — `frontend/vite.config.ts`). See
   [`frontend/README.md`](frontend/README.md) for details.
 - **Backend** (`server/`): implemented — FastAPI, every operation in `openapi.yaml`,
   tested with pytest (`server/tests/`). Persistence is an **in-memory mock store**
   (`server/src/flowlane_api/repositories/memory.py`) behind a `Store` protocol; see
-  [`server/README.md`](server/README.md). The frontend is **not wired to it yet**:
-  `frontend/src/api/generated/endpoints/` already has a real, typed `fetch` function per
-  operation (generated from `openapi.yaml` by orval — see below), so swapping the mock
-  for those calls in `client.ts` should be the only frontend change required.
+  [`server/README.md`](server/README.md). The frontend must be run against it — there
+  is no longer a frontend-side mock.
 - **Database**: not started — replace `InMemoryStore` with a SQL implementation of the
   same protocol (steps in `server/README.md`).
 
@@ -41,8 +40,8 @@ work in the repo, not what to build.
   asked for.
 - Follow the phase order in `_docs/specs.md` §19 (setup → DB/API → frontend → drag & drop
   → UX → auth → testing → deployment) unless the user directs otherwise. Frontend
-  (Phases 1/3/4/5, against the mock) is done; the backend half of Phase 2 is done, the
-  database half isn't.
+  (Phases 1/3/4/5) is done; the API half of Phase 2 is done and wired to the frontend,
+  the database half isn't.
 
 ## Tech stack
 
@@ -69,9 +68,9 @@ work in the repo, not what to build.
 src/
 ├── api/
 │   ├── generated/   # orval output from ../../openapi.yaml — do not hand-edit, regenerate instead
-│   ├── client.ts    # the `api` object — mock backend, mirrors openapi.yaml exactly
-│   ├── mockStore.ts # localStorage-backed "database" + seed data
-│   └── apiError.ts
+│   ├── client.ts    # the `api` object — wraps generated/endpoints, throws ApiError on non-2xx
+│   ├── apiError.ts  # ApiError + toUserMessage()
+│   └── index.ts
 ├── components/
 │   ├── Board/       # dashboard cards, board create/rename modal, search+filter bar
 │   ├── Column/      # Column, ColumnHeader, AddColumnForm
@@ -81,8 +80,8 @@ src/
 │   ├── Dashboard/   # "/"
 │   └── Board/       # "/boards/:boardId"
 ├── hooks/           # TanStack Query hooks — queries + optimistic mutations, call `api`
-├── types/           # domain types (Priority re-exported from api/generated/model; entities hand-written — see types/index.ts for why)
-└── utils/           # validation, date helpers, id generation, board transforms (optimistic-update logic)
+├── types/           # domain types, re-exported from api/generated/model
+└── utils/           # validation, date helpers, board transforms (optimistic-update logic)
 ```
 
 ### Backend structure (implemented — `server/src/flowlane_api/`)
@@ -95,14 +94,14 @@ exist yet — it arrives with the database. Details in `server/README.md`.
 
 ## API contract changes
 
-`openapi.yaml`, `frontend/src/api/client.ts` (the mock), and — once it exists — the real
-backend must all agree. When a change touches the API surface:
+`openapi.yaml`, the frontend, and the backend must all agree. When a change touches the
+API surface:
 
 1. Edit `openapi.yaml` first (path, schema, validation constraint, whatever changed).
 2. From `frontend/`, run `npm run generate:api` to regenerate `src/api/generated/` and
    commit the diff.
-3. Update `src/api/client.ts`'s mock implementation (and `mockStore.ts` if the data shape
-   changed) to match.
+3. Fix whatever the regenerated types break in `src/api/client.ts`, `src/hooks/`, and
+   `src/types/` (a shape change surfaces as type errors there).
 4. Update the backend (`server/src/flowlane_api/schemas/`, `routers/`, `services/`) and
    its tests the same way; `uv run pytest` from `server/` must pass.
 
@@ -119,9 +118,10 @@ Never hand-edit anything under `frontend/src/api/generated/` — it's regenerate
   server-managed (`readOnly` in the schema); clients only influence it through the
   reorder/move endpoints.
 - API errors follow the shape in `_docs/specs.md` §14 / `openapi.yaml`'s `Error` schema:
-  `{ "error": { "code": "...", "message": "..." } }`. The mock only emits
-  `VALIDATION_ERROR` and `NOT_FOUND`; a real backend can add more codes but must keep the
-  same envelope (`frontend/src/api/apiError.ts` only reads `code`/`message`).
+  `{ "error": { "code": "...", "message": "..." } }`. The backend emits
+  `VALIDATION_ERROR`, `NOT_FOUND`, `METHOD_NOT_ALLOWED`, and `INTERNAL_ERROR`; new codes
+  are fine as long as the envelope stays (`frontend/src/api/client.ts` only reads
+  `code`/`message`, and adds its own `NETWORK_ERROR` when no response arrives).
 - Task priority is one of `LOW | MEDIUM | HIGH` — keep it an enum on both sides (the
   generated `Priority` type/const on the frontend; a Python `Enum`/`StrEnum` in Pydantic
   models on the backend), not a free string.
@@ -144,7 +144,7 @@ Never hand-edit anything under `frontend/src/api/generated/` — it's regenerate
   update, then persist, then revert on failure" behavior described in `_docs/specs.md`
   §11 (`frontend/src/hooks/useColumnMutations.ts`, `useTaskMutations.ts`).
 - If `openapi.yaml` changed, confirm `frontend/src/api/generated/` was regenerated (step
-  2 under "API contract changes") and the mock in `client.ts` still matches it.
+  2 under "API contract changes") and `client.ts` still type-checks against it.
 - Keep commits scoped to one logical change.
 
 ## Running the backend

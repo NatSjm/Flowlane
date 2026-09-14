@@ -2,9 +2,9 @@
  * Mirrors the error shape from `_docs/specs.md` §14:
  * { "error": { "code": "...", "message": "..." } }
  *
- * Thrown by the mock backend (src/api/client.ts) so calling code — and the
- * UI's error states — behave the same way they will once a real HTTP API
- * replaces the mock.
+ * Thrown by src/api/client.ts for every failed request: `code`/`message`
+ * come from the server's error envelope, or are `NETWORK_ERROR` /
+ * `HTTP_ERROR` when there was no usable response at all.
  */
 export class ApiError extends Error {
   code: string;

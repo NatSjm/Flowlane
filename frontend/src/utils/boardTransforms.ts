@@ -3,8 +3,8 @@ import type { BoardDetail, Column, ColumnWithTasks, Priority, Task } from "../ty
 /**
  * Pure, immutable transforms over a BoardDetail. Used by the optimistic
  * update path in src/hooks/* so the UI reflects a drag/edit instantly,
- * before the (mocked) network call resolves — mirroring the logic the
- * mock backend applies for real in src/api/client.ts.
+ * before the network call resolves — mirroring the position bookkeeping
+ * the server applies for real (server/src/flowlane_api/services/).
  */
 
 export function withColumnAdded(board: BoardDetail, column: Column): BoardDetail {
