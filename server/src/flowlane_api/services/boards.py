@@ -1,10 +1,12 @@
 from flowlane_api.common import new_id, utcnow
 from flowlane_api.errors import NotFoundError
-from flowlane_api.repositories import BoardRecord, ColumnRecord, Store
+from flowlane_api.models import BoardRecord, ColumnRecord
+from flowlane_api.repositories import Store
 from flowlane_api.schemas import (
     Board,
     BoardDetail,
     BoardSummary,
+    Column,
     ColumnWithTasks,
     CreateBoardInput,
     Task,
@@ -28,7 +30,7 @@ class BoardService:
             columns = self._store.columns.list_for_board(board.id)
             summaries.append(
                 BoardSummary(
-                    **vars(board),
+                    **Board.model_validate(board).model_dump(),
                     column_count=len(columns),
                     task_count=self._store.tasks.count_for_columns(c.id for c in columns),
                 )
@@ -39,7 +41,7 @@ class BoardService:
         board = self._require_board(board_id)
         columns = [
             ColumnWithTasks(
-                **vars(column),
+                **Column.model_validate(column).model_dump(),
                 tasks=[
                     Task.model_validate(task)
                     for task in self._store.tasks.list_for_column(column.id)
@@ -47,7 +49,7 @@ class BoardService:
             )
             for column in self._store.columns.list_for_board(board.id)
         ]
-        return BoardDetail(**vars(board), columns=columns)
+        return BoardDetail(**Board.model_validate(board).model_dump(), columns=columns)
 
     def create_board(self, data: CreateBoardInput) -> Board:
         timestamp = utcnow()

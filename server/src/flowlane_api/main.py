@@ -3,11 +3,15 @@
 Run locally with `uv run fastapi dev src/flowlane_api/main.py` (see server/README.md).
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from flowlane_api.config import Settings, load_settings
+from flowlane_api.db import create_db_engine, create_session_factory, init_db
 from flowlane_api.errors import register_error_handlers
-from flowlane_api.repositories.memory import InMemoryStore
 from flowlane_api.routers import boards_router, columns_router, tasks_router
 
 # openapi.yaml: `servers: [{url: /api}]` — the frontend fetches relative to this prefix.
@@ -18,7 +22,23 @@ API_PREFIX = "/api"
 DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Build the app. `settings` defaults to the environment (`DATABASE_URL`, …); tests
+    pass their own to point at a throwaway database."""
+    settings = settings or load_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # One engine (connection pool) per process; sessions are per request — see
+        # `dependencies.get_store`.
+        engine = create_db_engine(settings.database_url, echo=settings.sql_echo)
+        init_db(engine)
+        app.state.session_factory = create_session_factory(engine)
+        try:
+            yield
+        finally:
+            engine.dispose()
+
     app = FastAPI(
         title="Flowlane API",
         version="0.1.0",
@@ -28,10 +48,9 @@ def create_app() -> FastAPI:
         openapi_url=f"{API_PREFIX}/openapi.json",
         docs_url=f"{API_PREFIX}/docs",
         redoc_url=None,
+        lifespan=lifespan,
     )
-    # The mock database. Process-local and lost on restart; swapped for a real
-    # database later via `dependencies.get_store`.
-    app.state.store = InMemoryStore()
+    app.state.settings = settings
 
     app.add_middleware(
         CORSMiddleware,

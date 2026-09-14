@@ -1,15 +1,16 @@
 """Repository interfaces.
 
 Records returned by `get`/`list*` are live: services mutate them in place and call
-`save` so a database-backed implementation can flush the change. (The in-memory store's
-`save` is a no-op because it hands out its own objects.) Cascading deletes are
-orchestrated by the services, not hidden in the repositories, so they stay explicit.
+`save`, and the mutation is visible to every later repository call in the same request
+(the SQL implementation hands out session-attached rows and autoflushes). Cascading
+deletes are orchestrated by the services, not hidden in the repositories, so they stay
+explicit.
 """
 
 from collections.abc import Iterable
 from typing import Protocol
 
-from flowlane_api.repositories.records import BoardRecord, ColumnRecord, TaskRecord
+from flowlane_api.models import BoardRecord, ColumnRecord, TaskRecord
 
 
 class BoardRepository(Protocol):

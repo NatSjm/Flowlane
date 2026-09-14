@@ -26,12 +26,14 @@ work in the repo, not what to build.
   dev server proxies them to port 8000 — `frontend/vite.config.ts`). See
   [`frontend/README.md`](frontend/README.md) for details.
 - **Backend** (`server/`): implemented — FastAPI, every operation in `openapi.yaml`,
-  tested with pytest (`server/tests/`). Persistence is an **in-memory mock store**
-  (`server/src/flowlane_api/repositories/memory.py`) behind a `Store` protocol; see
-  [`server/README.md`](server/README.md). The frontend must be run against it — there
+  tested with pytest (`server/tests/`). The frontend must be run against it — there
   is no longer a frontend-side mock.
-- **Database**: not started — replace `InMemoryStore` with a SQL implementation of the
-  same protocol (steps in `server/README.md`).
+- **Database**: SQLAlchemy behind a `Store` protocol
+  (`server/src/flowlane_api/repositories/sql.py`, ORM models in `models/`). The
+  backend is chosen by `DATABASE_URL`; the default is a SQLite file
+  (`server/flowlane.sqlite3`). Schema is created with `create_all` on startup — no
+  Alembic yet, no PostgreSQL driver installed yet; see "Database" in
+  [`server/README.md`](server/README.md).
 
 ## Scope discipline
 
@@ -40,8 +42,8 @@ work in the repo, not what to build.
   asked for.
 - Follow the phase order in `_docs/specs.md` §19 (setup → DB/API → frontend → drag & drop
   → UX → auth → testing → deployment) unless the user directs otherwise. Frontend
-  (Phases 1/3/4/5) is done; the API half of Phase 2 is done and wired to the frontend,
-  the database half isn't.
+  (Phases 1/3/4/5) and Phase 2 (API + SQLite database) are done; migrations (Alembic)
+  and PostgreSQL support are the remaining database work.
 
 ## Tech stack
 
@@ -56,11 +58,13 @@ work in the repo, not what to build.
 - Backend (`server/`): Python 3.12 + FastAPI, Pydantic for validation, managed with
   [uv](https://docs.astral.sh/uv/) (dependencies, virtualenv, and running commands —
   don't use pip/poetry/conda directly). Implements `openapi.yaml` exactly.
-- Database (not yet built): PostgreSQL via SQLAlchemy or SQLModel, with Alembic for
-  migrations. Until then the backend uses `InMemoryStore`.
+- Database: SQLAlchemy 2 (mapped dataclasses), SQLite by default, configured with the
+  `DATABASE_URL` environment variable (`server/.env.example`). Keep the models and
+  queries dialect-agnostic — PostgreSQL is planned, and Alembic migrations with it.
+  SQLite-specific engine tweaks belong in `server/src/flowlane_api/db.py` only.
 - Tests: Vitest + React Testing Library (unit/component) and Playwright (e2e) on the
   frontend — not yet written; pytest on the backend (`server/tests/`, written first,
-  one fresh in-memory store per test).
+  one fresh in-memory SQLite database per test).
 
 ### Frontend structure (implemented — `frontend/src/`)
 
@@ -88,9 +92,10 @@ src/
 
 Same layering in Python (per `_docs/specs.md` §16): `routers/` (HTTP only) →
 `services/` (rules: positions, cascades, reorder/move) → `repositories/` (`Store`
-protocol, `InMemoryStore` mock, plain-dataclass records), with `schemas/` for Pydantic
-request/response models and `errors.py` for the error envelope. `models/` (ORM) doesn't
-exist yet — it arrives with the database. Details in `server/README.md`.
+protocol, `SqlStore` on a per-request SQLAlchemy session) → `models/` (ORM mapped
+dataclasses: `BoardRecord`, `ColumnRecord`, `TaskRecord`), with `schemas/` for Pydantic
+request/response models, `errors.py` for the error envelope, `config.py` for settings
+and `db.py` for engine/session setup. Details in `server/README.md`.
 
 ## API contract changes
 
@@ -156,8 +161,9 @@ Never hand-edit anything under `frontend/src/api/generated/` — it's regenerate
 - Everything is mounted under `/api` (`servers: [{url: /api}]` in `openapi.yaml`), so
   Swagger is at `http://localhost:8000/api/docs`, **not** the `/docs` URL that
   `fastapi dev` prints in its banner. A 404 on `GET /docs` in the logs is expected.
-- The store is in-memory: every restart — including `fastapi dev`'s auto-reload on a
-  source change — wipes all boards. Don't treat lost data as a bug.
+- Data lives in `server/flowlane.sqlite3` (git-ignored) unless `DATABASE_URL` says
+  otherwise, and survives restarts. There are no migrations yet: after changing a
+  model, delete the file so `create_all` rebuilds the schema.
 
 ## Shell notes
 

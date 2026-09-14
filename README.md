@@ -4,7 +4,7 @@ A web-based Kanban board for managing tasks across the stages of a workflow: cre
 
 Full specification: [_docs/specs.md](_docs/specs.md) · Backend API contract: [openapi.yaml](openapi.yaml)
 
-**Status:** the frontend is built and talks to the real backend (`server/`), which implements `openapi.yaml` on top of an in-memory mock database. The real database hasn't been started, so all data is lost whenever the backend restarts.
+**Status:** the frontend is built and talks to the real backend (`server/`), which implements `openapi.yaml` on top of a SQLite database (SQLAlchemy; any backend via `DATABASE_URL`). Migrations and PostgreSQL are next.
 
 ## Features (MVP)
 
@@ -13,8 +13,7 @@ Full specification: [_docs/specs.md](_docs/specs.md) · Backend API contract: [o
 - Create, edit, delete, and view tasks with priority, due date, and description
 - Drag and drop to reorder tasks within a column and move tasks between columns
 - Search and filter tasks
-- State survives a page refresh (held by the backend — in memory for now, so it
-  lasts until the backend restarts; a real database is next)
+- State persists across page refreshes and backend restarts (SQLite database)
 
 See [_docs/specs.md](_docs/specs.md) for stretch features (auth, collaboration, labels, comments, etc.) and the full data model, API, and phased build plan.
 
@@ -25,7 +24,7 @@ See [_docs/specs.md](_docs/specs.md) for stretch features (auth, collaboration, 
 | Frontend | React, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS, `@dnd-kit` |
 | API contract & codegen | [openapi.yaml](openapi.yaml), consumed by [Orval](https://orval.dev) to generate frontend types + a typed `fetch` client |
 | Backend | Python, FastAPI, Pydantic, managed with [uv](https://docs.astral.sh/uv/) — implements `openapi.yaml` (see [server/README.md](server/README.md)) |
-| Database *(not yet built)* | PostgreSQL with SQLAlchemy/SQLModel + Alembic migrations — the backend currently uses an in-memory mock store |
+| Database | SQLAlchemy 2 — SQLite by default, any backend via `DATABASE_URL` (PostgreSQL + Alembic migrations planned) |
 | Testing | Vitest, React Testing Library, Playwright (frontend, not yet written); pytest (backend) |
 
 ## How the pieces connect
@@ -62,12 +61,15 @@ server/                  # FastAPI backend — see server/README.md
 │   └── flowlane_api/
 │       ├── routers/     # boards.py, columns.py, tasks.py — HTTP only
 │       ├── services/    # positions, cascades, reorder/move rules
-│       ├── repositories/# Store protocol + InMemoryStore (mock DB; SQL impl comes later)
+│       ├── repositories/# Store protocol + SqlStore (SQLAlchemy session per request)
+│       ├── models/      # SQLAlchemy ORM models
 │       ├── schemas/     # Pydantic models (camelCase on the wire)
+│       ├── config.py    # DATABASE_URL and friends (env vars / .env)
+│       ├── db.py        # engine + session factory
 │       ├── dependencies.py
 │       ├── errors.py    # { error: { code, message } } envelope
 │       └── main.py
-└── tests/               # pytest, one fresh in-memory store per test
+└── tests/               # pytest, one fresh in-memory SQLite database per test
 ```
 
 ## Getting Started
@@ -100,9 +102,9 @@ Once it's up:
 - Health check: http://localhost:8000/api/health → `{"status":"ok"}`
 - API base: http://localhost:8000/api (e.g. `GET /api/boards`)
 
-Data lives in memory and is lost on every restart — including `fastapi dev`'s
-auto-reload when a source file changes. See [server/README.md](server/README.md) for the
-layout and how the mock store will be replaced by a real database.
+Data is stored in `server/flowlane.sqlite3` (created on first start, git-ignored). Set
+`DATABASE_URL` — or copy `server/.env.example` to `server/.env` — to point at a different
+database; see [server/README.md](server/README.md) for the layout and configuration.
 
 ### Frontend
 
