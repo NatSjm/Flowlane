@@ -4,10 +4,10 @@ FastAPI implementation of [`../openapi.yaml`](../openapi.yaml) — every endpoin
 validation rule, and error shape the frontend expects. Managed with
 [uv](https://docs.astral.sh/uv/); Python 3.12+.
 
-**Persistence is a mock:** an in-memory store that lives for the life of the process and
-is lost on restart. It sits behind a small repository interface so PostgreSQL can be
-swapped in later without touching the routers or services (see "Replacing the mock
-database").
+**Persistence is SQLAlchemy** behind a small repository interface. The database is
+chosen by the `DATABASE_URL` environment variable and defaults to a SQLite file
+(`server/flowlane.sqlite3`, git-ignored); nothing in the code is SQLite-specific, so
+PostgreSQL is a URL change plus a driver (see "Database").
 
 ## Commands
 
@@ -26,6 +26,19 @@ uv run mypy src tests                       # strict type-check
 From the repo root, prefix with `uv --directory server …` instead of `cd`-ing. On
 Windows PowerShell 5.1, chain commands with `;` — `&&` is not supported there.
 
+### Configuration
+
+Settings are read from environment variables, or from a `.env` file in the working
+directory (`server/.env`, git-ignored — copy [`.env.example`](.env.example) to start):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite:///<repo>/server/flowlane.sqlite3` | Any [SQLAlchemy URL](https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls). `sqlite://` is an in-memory database (what the tests use). |
+| `SQL_ECHO` | `0` | `1` logs every SQL statement. |
+
+Tables are created on startup if they don't exist (`db.init_db`); there are no
+migrations yet, so a schema change currently means deleting the SQLite file.
+
 ### URLs
 
 All endpoints are mounted under `/api`, matching `servers: [{url: /api}]` in the
@@ -41,25 +54,27 @@ not exist** (it 404s) — use these instead:
 
 CORS allows the Vite dev origin (`http://localhost:5173`).
 
-The in-memory store is wiped on every restart, including the automatic reload
-`fastapi dev` performs when a file under `server/` changes.
+Data persists across restarts (including `fastapi dev`'s auto-reload) in the SQLite
+file. Delete it for a clean slate.
 
 ## Layout
 
 ```text
 src/flowlane_api/
-├── main.py            # create_app(): FastAPI app, /api prefix, CORS, error handlers
-├── dependencies.py    # get_store() — the single persistence seam — and service factories
+├── main.py            # create_app(): FastAPI app, /api prefix, CORS, error handlers, DB lifespan
+├── config.py          # Settings — DATABASE_URL, SQL_ECHO (env vars / .env)
+├── db.py              # engine + session factory from a URL, init_db(); SQLite-only tweaks live here
+├── dependencies.py    # get_store() — one session per request, commit/rollback — and service factories
 ├── errors.py          # NotFoundError / ValidationError + handlers → { error: { code, message } }
 ├── common.py          # new_id("board"|"column"|"task"), utcnow()
 ├── routers/           # HTTP only: boards.py, columns.py, tasks.py (one per openapi.yaml tag)
 ├── services/          # business rules: positions, cascades, reorder/move semantics
+├── models/            # SQLAlchemy ORM (mapped dataclasses): BoardRecord, ColumnRecord, TaskRecord
 ├── repositories/
 │   ├── protocols.py   # Store / BoardRepository / ColumnRepository / TaskRepository (Protocols)
-│   ├── records.py     # plain dataclasses the repositories store and return
-│   └── memory.py      # InMemoryStore — the mock database
+│   └── sql.py         # SqlStore — the Store protocol on a SQLAlchemy session
 └── schemas/           # Pydantic models: camelCase on the wire, snake_case in Python
-tests/                 # pytest; one fresh InMemoryStore per test via dependency override
+tests/                 # pytest; one fresh in-memory SQLite database per test
 ```
 
 Request flow: router parses the body into a `schemas` model (shape validation, trimming,
@@ -86,15 +101,33 @@ model.
 - Unknown routes and unsupported methods also return the error envelope
   (`NOT_FOUND` / `METHOD_NOT_ALLOWED`); unhandled exceptions return `INTERNAL_ERROR`.
 
-## Replacing the mock database
+## Database
 
-1. Implement the `Store` protocol in `repositories/protocols.py` on top of
-   SQLAlchemy/SQLModel (one class per repository; `save()` is where a DB-backed
-   implementation flushes an in-place mutation — the in-memory version's `save()` is a
-   no-op).
-2. Map ORM rows to/from the dataclasses in `repositories/records.py` (or make the ORM
-   models satisfy the same attribute names).
-3. Provide it from `dependencies.get_store` (e.g. a request-scoped session) instead of
-   `app.state.store`.
+- **One session per request.** `dependencies.get_store` opens a SQLAlchemy session,
+  hands the services a `SqlStore` over it, commits when the endpoint returns and rolls
+  back when it raises. It's a function-scoped dependency so the commit lands *before*
+  the response is sent.
+- **Records are live ORM rows.** The repositories return session-attached instances;
+  a service mutating one in place and then querying again sees its own change
+  (autoflush). `add`/`save`/`delete` flush immediately so constraint errors surface at
+  the call that caused them.
+- **Portable schema.** Tables follow `_docs/specs.md` §5 (`boards`, `columns`,
+  `tasks`). Timestamps are stored as naive UTC via `models.base.UtcDateTime` and come
+  back tz-aware; `priority` is a plain VARCHAR (non-native enum); foreign keys carry
+  `ON DELETE CASCADE` as a safety net behind the services' explicit cascades. Every
+  constraint has a deterministic name (`models.base.NAMING_CONVENTION`) so future
+  Alembic migrations can refer to them on any backend.
+- **The only dialect-specific code** is `db._sqlite_engine_kwargs` /
+  `_enable_sqlite_foreign_keys` — SQLite needs `check_same_thread=False` for FastAPI's
+  worker threads, a shared connection for `sqlite://` in-memory databases, and
+  `PRAGMA foreign_keys=ON` per connection.
 
-The services and routers don't change; the test suite is the acceptance criterion.
+### Adding PostgreSQL later
+
+1. `uv add "psycopg[binary]"` (or another driver).
+2. Set `DATABASE_URL=postgresql+psycopg://user:pass@host/flowlane`.
+3. Add Alembic and generate the initial migration from `models.Base.metadata`; switch
+   `db.init_db` from `create_all` to running migrations.
+
+Nothing in `models/`, `repositories/sql.py`, the services, or the routers should need
+to change.

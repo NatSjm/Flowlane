@@ -1,6 +1,7 @@
 from flowlane_api.common import new_id, utcnow
 from flowlane_api.errors import NotFoundError
-from flowlane_api.repositories import Store, TaskRecord
+from flowlane_api.models import TaskRecord
+from flowlane_api.repositories import Store
 from flowlane_api.schemas import CreateTaskInput, MoveTaskInput, Task, UpdateTaskInput
 
 

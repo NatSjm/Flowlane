@@ -1,4 +1,4 @@
-"""Shared fixtures: a fresh app + empty in-memory store per test."""
+"""Shared fixtures: a fresh app + empty SQLite database per test."""
 
 from collections.abc import Iterator
 from typing import Any
@@ -7,22 +7,23 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
 
-from flowlane_api.dependencies import get_store
+from flowlane_api.config import Settings
 from flowlane_api.main import create_app
-from flowlane_api.repositories.memory import InMemoryStore
+
+# In-memory SQLite: created by the app's lifespan on startup, gone when the engine is
+# disposed on shutdown — so `with TestClient(app)` bounds each test's database.
+TEST_DATABASE_URL = "sqlite://"
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    app = create_app()
-    store = InMemoryStore()
-    app.dependency_overrides[get_store] = lambda: store
+    app = create_app(Settings(database_url=TEST_DATABASE_URL))
     with TestClient(app) as test_client:
         yield test_client
 
 
 # ---------------------------------------------------------------------------
-# Small helpers so each test reads as "arrange → act → assert" without
+# Small helpers so each test reads as "arrange â†’ act â†’ assert" without
 # repeating the create-board / create-column / create-task boilerplate.
 # ---------------------------------------------------------------------------
 
@@ -67,7 +68,7 @@ def board_with_columns(client: TestClient) -> tuple[Json, list[Json]]:
 def column_task_ids(client: TestClient, board_id: str, column_id: str) -> list[str]:
     """Task ids in `column_id` as returned by GET /boards/{id} (i.e. sorted by position).
 
-    Also asserts the column's positions are contiguous (0, 1, 2, …), which every
+    Also asserts the column's positions are contiguous (0, 1, 2, â€¦), which every
     task mutation is required to maintain.
     """
     board = get_board(client, board_id)

@@ -1,6 +1,7 @@
 from flowlane_api.common import new_id, utcnow
 from flowlane_api.errors import NotFoundError, ValidationError
-from flowlane_api.repositories import ColumnRecord, Store
+from flowlane_api.models import ColumnRecord
+from flowlane_api.repositories import Store
 from flowlane_api.schemas import Column, CreateColumnInput, UpdateColumnInput
 
 
